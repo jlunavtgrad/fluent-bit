@@ -347,7 +347,6 @@ struct flb_task *flb_task_create(uint64_t ref_id,
                                  int *err)
 {
     int count = 0;
-    uint64_t routes_mask = 0;
     struct flb_task *task;
     struct flb_task_route *route;
     struct flb_output_instance *o_ins;
@@ -396,7 +395,7 @@ struct flb_task *flb_task_create(uint64_t ref_id,
         o_ins = mk_list_entry(o_head,
                               struct flb_output_instance, _head);
         
-        if ((((struct flb_input_chunk *) ic)->routes_mask & o_ins->mask_id) > 0) {
+        if (flb_routes_mask_get_bit(task_ic->routes_mask, o_ins->id) != 0) {
             route = flb_malloc(sizeof(struct flb_task_route));
             if (!route) {
                 flb_errno();
@@ -406,9 +405,6 @@ struct flb_task *flb_task_create(uint64_t ref_id,
             route->out = o_ins;
             mk_list_add(&route->_head, &task->routes);
             count++;
-
-            /* set the routes as a mask */
-            routes_mask |= o_ins->mask_id;
         }
     }
 
