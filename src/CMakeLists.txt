@@ -50,6 +50,7 @@ set(src
   flb_callback.c
   flb_strptime.c
   flb_fstore.c
+  flb_routes_mask.c
   )
 
 if (CMAKE_SYSTEM_NAME MATCHES "Windows")
