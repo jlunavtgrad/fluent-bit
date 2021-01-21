@@ -115,7 +115,7 @@ static char *expand_tilde(const char *path)
 }
 #endif
 
-static int tail_is_excluded(char *path, struct flb_tail_config *ctx)
+static int tail_is_path_excluded(char *path, struct flb_tail_config *ctx)
 {
     struct mk_list *head;
     struct flb_slist_entry *pattern;
@@ -129,6 +129,36 @@ static int tail_is_excluded(char *path, struct flb_tail_config *ctx)
         if (fnmatch(pattern->str, path, 0) == 0) {
             return FLB_TRUE;
         }
+    }
+
+    return FLB_FALSE;
+}
+
+static int tail_is_mtime_excluded(char *path, struct flb_tail_config *ctx) {
+    struct timeval time_now;
+    struct stat attr;
+    long elapsed_seconds = 0;
+
+    /* do not filter when mtime is set to zero */
+    if (ctx->mtime_filter == 0) {
+        return FLB_TRUE;
+    }
+
+    /* get stats on the file */
+    stat(path, &attr);
+    /* get the current time */
+    gettimeofday(&time_now, NULL);
+
+    elapsed_seconds = time_now.tv_sec - stat.mtim.tv_sec;
+
+    /*
+     * Positive values for mtime exclude files with recent modifications
+     * and negative values exclude files not recently modified
+     */
+    if (ctx->mtime_filter > 0 && elapsed_seconds > ctx->mtime_filter) {
+        return FLB_TRUE;
+    } else if (ctx->mtime_filter < 0 && elapsed_seconds < ctx->mtime_filter) {
+        return FLB_TRUE;
     }
 
     return FLB_FALSE;
@@ -231,9 +261,16 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
         ret = stat(globbuf.gl_pathv[i], &st);
         if (ret == 0 && S_ISREG(st.st_mode)) {
             /* Check if this file is blacklisted */
-            if (tail_is_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
-                flb_plg_debug(ctx->ins, "excluded=%s", globbuf.gl_pathv[i]);
+            if (tail_is_path_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
+                flb_plg_debug(ctx->ins, "path_excluded=%s", globbuf.gl_pathv[i]);
                 continue;
+            }
+
+            if (ctx->mtime != 0) {
+                if (tail_is_mtime_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
+                    flb_plg_debug(ctx->ins, "mtime_excluded=%s", globbuf.gl_pathv[i]);
+                    continue;
+                }
             }
 
             /* Append file to list */
