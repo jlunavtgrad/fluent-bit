@@ -149,7 +149,7 @@ static int tail_is_mtime_excluded(char *path, struct flb_tail_config *ctx) {
     /* get the current time */
     gettimeofday(&time_now, NULL);
 
-    elapsed_seconds = time_now.tv_sec - stat.st_mtime;
+    elapsed_seconds = time_now.tv_sec - attr.st_mtime;
 
     /*
      * Positive values for mtime exclude files with recent modifications
