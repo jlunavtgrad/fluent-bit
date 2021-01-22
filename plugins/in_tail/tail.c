@@ -481,7 +481,7 @@ static struct flb_config_map config_map[] = {
      "files matching a certain criteria, e.g: 'exclude_path *.gz,*.zip'"
     },
     {
-     FLB_CONFIG_MAP_CLIST, "mtime_filter", "0",
+     FLB_CONFIG_MAP_TIME, "mtime_filter", "0",
      0, FLB_TRUE, offsetof(struct flb_tail_config, mtime_filter),
      "ignore files based on their last modified timestamps. The default "
      "value is 0 which includes all files. Positive values exclude files "
