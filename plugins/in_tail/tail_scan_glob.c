@@ -140,25 +140,22 @@ static int tail_is_mtime_excluded(char *path, struct flb_tail_config *ctx) {
     long elapsed_seconds = 0;
 
     /* do not filter when mtime is set to zero */
-    if (ctx->mtime_filter == 0) {
-        return FLB_TRUE;
-    }
+    if (ctx->mtime_filter != 0) {
 
-    /* get stats on the file */
-    stat(path, &attr);
-    /* get the current time */
-    gettimeofday(&time_now, NULL);
+        /* get stats on the file */
+        stat(path, &attr);
+        gettimeofday(&time_now, NULL);
+        elapsed_seconds = time_now.tv_sec - attr.st_mtime;
 
-    elapsed_seconds = time_now.tv_sec - attr.st_mtime;
+        /* Positive values for mtime exclude files with recent modifications */
+        if (ctx->mtime_filter > 0 && elapsed_seconds < ctx->mtime_filter) {
+            return FLB_TRUE;
+        }
 
-    /*
-     * Positive values for mtime exclude files with recent modifications
-     * and negative values exclude files not recently modified
-     */
-    if (ctx->mtime_filter > 0 && elapsed_seconds > ctx->mtime_filter) {
-        return FLB_TRUE;
-    } else if (ctx->mtime_filter < 0 && elapsed_seconds < ctx->mtime_filter) {
-        return FLB_TRUE;
+        /* negative values exclude files not recently modified */
+        if (ctx->mtime_filter < 0 && elapsed_seconds > (-ctx->mtime_filter)) {
+            return FLB_TRUE;
+        }
     }
 
     return FLB_FALSE;
@@ -266,11 +263,9 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
                 continue;
             }
 
-            if (ctx->mtime_filter != 0) {
-                if (tail_is_mtime_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
-                    flb_plg_debug(ctx->ins, "mtime_excluded=%s", globbuf.gl_pathv[i]);
-                    continue;
-                }
+            if (tail_is_mtime_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
+                flb_plg_debug(ctx->ins, "mtime_excluded=%s", globbuf.gl_pathv[i]);
+                continue;
             }
 
             /* Append file to list */
