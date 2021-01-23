@@ -116,7 +116,7 @@ struct flb_tail_config {
     struct mk_list *exclude_list;
 
     /* Excludes files by their last modified times when set to a non-zero value */
-    long mtime_filter;
+    int mtime_filter;
 
     /* Plugin input instance */
     struct flb_input_instance *ins;
