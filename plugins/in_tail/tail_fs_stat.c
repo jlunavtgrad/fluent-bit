@@ -94,6 +94,8 @@ static int tail_fs_check(struct flb_input_instance *ins,
     struct flb_tail_file *file = NULL;
     struct fs_stat *fst;
     struct stat st;
+    struct timeval time_now;
+    int elapsed_seconds;
 
     /* Lookup watched file */
     mk_list_foreach_safe(head, tmp, &ctx->files_event) {
@@ -170,6 +172,19 @@ static int tail_fs_check(struct flb_input_instance *ins,
         if (flb_tail_file_is_rotated(ctx, file) == FLB_TRUE) {
             flb_tail_file_rotated(file);
         }
+
+        /* Check if the file is idle for too long */
+        if (ctx->mtime_filter < 0) {
+            gettimeofday(&time_now, NULL);
+            elapsed_seconds = time_now.tv_sec - st.st_mtime;
+
+            if (elapsed_seconds > (-ctx->mtime_filter)) {
+                flb_tail_file_remove(file);
+                continue;
+            }
+        }
+
+
         flb_free(name);
 
     }

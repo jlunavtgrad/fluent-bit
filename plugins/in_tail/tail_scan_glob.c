@@ -137,7 +137,7 @@ static int tail_is_path_excluded(char *path, struct flb_tail_config *ctx)
 static int tail_is_mtime_excluded(char *path, struct flb_tail_config *ctx) {
     struct timeval time_now;
     struct stat attr;
-    long elapsed_seconds = 0;
+    int elapsed_seconds;
 
     /* do not filter when mtime is set to zero */
     if (ctx->mtime_filter != 0) {
