@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <sys/inotify.h>
 
 #include "tail_config.h"
@@ -55,8 +56,6 @@ static int debug_event_mask(struct flb_tail_config *ctx,
     if (!buf) {
         return -1;
     }
-
-    kutydfgkuyjhlukjnkluj
 
     /* Print info into sds */
     if (file) {
@@ -157,6 +156,49 @@ static int flb_tail_fs_add_rotated(struct flb_tail_file *file)
     return tail_fs_add(file, FLB_FALSE);
 }
 
+int tail_fs_remove_inactive_files(struct flb_input_instance *ins,
+        struct flb_config *config, void *in_context)
+{
+    int ret;
+    int elapsed_seconds;
+    struct timeval time_now;
+    struct stat st;
+    struct mk_list *head;
+    struct mk_list *tmp;
+    struct flb_tail_file *file;
+    struct flb_tail_config *ctx = in_context;
+
+    /* bail if the mtime_filter is disabled or set to a positive value */
+    if (ctx->mtime_filter >= 0) {
+        return 0;
+    }
+
+    gettimeofday(&time_now, NULL);
+
+    /* loop through files checking their last modified times */
+    mk_list_foreach_safe(head, tmp, &ctx->files_event) {
+        file = mk_list_entry(head, struct flb_tail_file, _head);
+
+        ret = fstat(file->fd, &st);
+        if (ret == -1) {
+            flb_plg_debug(ins, "inode=%"PRIu64" error stat(2) %s, removing",
+                          file->inode, file->name);
+            flb_tail_file_remove(file);
+            continue;
+        }
+
+        elapsed_seconds = time_now.tv_sec - st.st_mtime;
+
+        if (elapsed_seconds > (-ctx->mtime_filter)) {
+            flb_plg_debug(ctx->ins, "[tail] Removing inactive file %s",
+                          file->name);
+            flb_tail_file_remove(file);
+        }
+    }
+
+    return 0;
+}
+
 static int tail_fs_event(struct flb_input_instance *ins,
                          struct flb_config *config, void *in_context)
 {
@@ -168,12 +210,6 @@ static int tail_fs_event(struct flb_input_instance *ins,
     struct flb_tail_file *file = NULL;
     struct inotify_event ev;
     struct stat st;
-
-    /* wait for an event */
-    ret = wait_for_event(ctx->fd_notify, ctx);
-    if (ret < 1) {
-        return -1;
-    }
 
     /* Read the event */
     ret = read(ctx->fd_notify, &ev, sizeof(struct inotify_event));
@@ -295,96 +331,10 @@ static int tail_fs_event(struct flb_input_instance *ins,
         return ret;
     }
 
-    tail_fs_close_inactive_files();
-
     return 0;
 }
 
-/*
- * When the mtime_filter is used to ignore inactive files
- * this method will wait for inotify events using a select
- * call. If the select call times out the open files are
- * scanned and inactive files are closed.
- */
-int tail_fs_wait_for_event(int fd, flb_tail_config *config)
-{
-    int ret;
-    fd_set set;
-    struct timeval timeout;
 
-    FD_ZERO(&set);
-    FD_SET(fd, &set);
-
-    /* if the mtime_filter is non-negative, do not use select to wait */
-    if (config->mtime_filter >= 0) {
-        return 1;
-    }
-
-    timeout.tv_sec = config->mtime_filter;
-    timeout.tv_usec = 0L;
-
-    do {
-        flb_plg_debug(ctx->ins, "[tail] waiting on select");
-        ret = select(fd + 1, &set, NULL, NULL, &timeout);
-
-        /* select returns zero on timeout */
-        if (ret == 0) {
-            flb_plg_debug(ctx->ins, "[tail] select timed out");
-            tail_fs_close_inactive_files(config);
-        }
-    } while (ret == 0);
-
-    return ret;
-}
-
-void tail_fs_close_inactive_files(flb_tail_config *ctx)
-{
-    int elapsed_seconds;
-    struct timeval time_now;
-    struct stat st;
-    struct mk_list *head;
-    struct mk_list *tmp;
-    struct flb_tail_file *file = NULL;
-
-    /* bail if the mtime_filter is disabled */
-    if (config->mtime_filter >= 0) {
-        return;
-    }
-
-    gettimeofday(&time_now, NULL);
-
-    /* bail if the scan has been done recently */
-    if (ctx->last_mtime_scan.tv_sec + ctx->refresh_interval_sec > time_now.tv_sec) {
-        flb_plg_debug(ctx->ins, "[tail] skipping scan of inactive files");
-        return;
-    }
-
-    ctx->last_mtime_scan.tv_sec = time_now.tv_sec;
-    ctx->last_mtime_scan.tv_usec = time_now.tv_usec;
-
-    /* loop through files checking their last modified times */
-    mk_list_foreach_safe(head, tmp, &ctx->files_event) {
-        file = mk_list_entry(head, struct flb_tail_file, _head);
-
-        ret = fstat(file->fd, &st);
-        if (ret == -1) {
-            flb_plg_debug(ins, "inode=%"PRIu64" error stat(2) %s, removing",
-                          file->inode, file->name);
-            flb_tail_file_remove(file);
-            continue;
-        }
-
-        elapsed_seconds = ctx->last_mtime_scan.tv_sec - st.st_mtime;
-
-        if (elapsed_seconds > (-ctx->mtime_filter)) {
-            flb_plg_debug(ctx->ins, "[tail] Removing inactive file %s",
-                          file->name);
-            flb_tail_file_remove(file);
-        }
-    }
-
-    /* what happens if we close all the files? */
-}
 
 
 /* File System events based on Inotify(2). Linux >= 2.6.32 is suggested */
@@ -411,6 +361,17 @@ int flb_tail_fs_init(struct flb_input_instance *in,
         return -1;
     }
     ctx->coll_fd_fs1 = ret;
+
+    /* Set a manual timer to check for inactive files */
+    if (ctx->mtime_filter < 0) {
+        ret = flb_input_set_collector_time(in, tail_fs_remove_inactive_files,
+                                           ctx->refresh_interval_sec,
+                                           ctx->refresh_interval_nsec, config);
+        if (ret < 0) {
+            return -1;
+        }
+        ctx->coll_fd_fs2 = ret;
+    }
 
     return 0;
 }

@@ -59,7 +59,7 @@ struct flb_tail_config {
 
     /* Backend collectors */
     int coll_fd_fs1;           /* used by fs_inotify & fs_stat */
-    int coll_fd_fs2;           /* only used by fs_stat         */
+    int coll_fd_fs2;           /* used by fs_inotify & fs_stat */
 
     /* Configuration */
     int dynamic_tag;           /* dynamic tag ? e.g: abc.*     */
