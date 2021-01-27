@@ -245,7 +245,7 @@ static int tail_fs_event(struct flb_input_instance *ins,
     }
 
     /* Check file rotation (only if it has not been rotated before) */
-    if (ev.mask & IN_MOVE_SELF && file->rotated == 0) {
+    if (ev.mask & IN_MOVE_SELF && file->rotated == 0 && !file->closed) {
         flb_plg_debug(ins, "inode=%"PRIu64" rotated IN_MOVE SELF '%s'",
                       file->inode, file->name);
 
