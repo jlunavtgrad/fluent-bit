@@ -248,7 +248,7 @@ static int in_tail_watcher_callback(struct flb_input_instance *ins,
             }
 
             /* The symbolic link name has been rotated */
-            flb_tail_file_rotated(file, NULL);
+            flb_tail_file_rotated(file);
         }
     }
     return ret;

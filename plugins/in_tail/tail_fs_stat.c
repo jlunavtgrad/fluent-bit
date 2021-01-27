@@ -193,7 +193,7 @@ static int tail_fs_check(struct flb_input_instance *ins,
              * real_name of the file.
              */
             if (flb_tail_file_is_rotated(ctx, file) == FLB_TRUE) {
-                flb_tail_file_rotated(file, name);
+                flb_tail_file_rotated(file);
             }
             flb_free(name);
 

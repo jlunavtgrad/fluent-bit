@@ -250,7 +250,7 @@ static int tail_fs_event(struct flb_input_instance *ins,
                       file->inode, file->name);
 
         /* A rotated file must be re-registered */
-        flb_tail_file_rotated(file, ev.name);
+        flb_tail_file_rotated(file);
         flb_tail_fs_remove(file);
         flb_tail_fs_add_rotated(file);
     }

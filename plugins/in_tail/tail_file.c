@@ -1283,7 +1283,7 @@ int flb_tail_file_to_event(struct flb_tail_file *file)
     /* Check if the file has been rotated */
     ret = flb_tail_file_is_rotated(ctx, file);
     if (ret == FLB_TRUE) {
-        flb_tail_file_rotated(file, NULL);
+        flb_tail_file_rotated(file);
     }
 
     /* Notify the fs-event handler that we will start monitoring this 'file' */
@@ -1403,21 +1403,18 @@ int flb_tail_file_name_dup(char *path, struct flb_tail_file *file)
 }
 
 /* Invoked every time a file was rotated */
-int flb_tail_file_rotated(struct flb_tail_file *file, char *name)
+int flb_tail_file_rotated(struct flb_tail_file *file)
 {
     int ret;
+    char *name;
     char *tmp;
-    char *name_alloc = NULL;
     struct stat st;
     struct flb_tail_config *ctx = file->config;
 
+    /* Get the new file name */
+    name = flb_tail_file_name(file);
     if (!name) {
-        /* Get the new file name */
-        name_alloc = flb_tail_file_name(file);
-        if (!name) {
-            return -1;
-        }
-        name = name_alloc;
+        return -1;
     }
 
     flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated %s -> %s",
@@ -1463,7 +1460,7 @@ int flb_tail_file_rotated(struct flb_tail_file *file, char *name)
         }
     }
     flb_free(tmp);
-    flb_free(name_alloc);
+    flb_free(name);
 
     return 0;
 }
