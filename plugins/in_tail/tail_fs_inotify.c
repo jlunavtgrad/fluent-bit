@@ -156,7 +156,7 @@ static int flb_tail_fs_add_rotated(struct flb_tail_file *file)
     return tail_fs_add(file, FLB_FALSE);
 }
 
-int tail_fs_remove_inactive_files(struct flb_input_instance *ins,
+int tail_fs_scan_for_inactive_files(struct flb_input_instance *ins,
         struct flb_config *config, void *in_context)
 {
     int ret;
@@ -168,8 +168,8 @@ int tail_fs_remove_inactive_files(struct flb_input_instance *ins,
     struct flb_tail_file *file;
     struct flb_tail_config *ctx = in_context;
 
-    /* bail if the mtime_filter is disabled or set to a positive value */
-    if (ctx->mtime_filter >= 0) {
+    /* bail if the inactivity_limit is disabled */
+    if (ctx->inactivity_limit <= 0 ) {
         return 0;
     }
 
@@ -178,6 +178,10 @@ int tail_fs_remove_inactive_files(struct flb_input_instance *ins,
     /* loop through files checking their last modified times */
     mk_list_foreach_safe(head, tmp, &ctx->files_event) {
         file = mk_list_entry(head, struct flb_tail_file, _head);
+
+        if (file->closed) {
+            continue;
+        }
 
         ret = fstat(file->fd, &st);
         if (ret == -1) {
@@ -189,10 +193,10 @@ int tail_fs_remove_inactive_files(struct flb_input_instance *ins,
 
         elapsed_seconds = time_now.tv_sec - st.st_mtime;
 
-        if (elapsed_seconds > (-ctx->mtime_filter)) {
-            flb_plg_debug(ctx->ins, "[tail] Removing inactive file %s",
+        if (elapsed_seconds > ctx->inactivity_limit) {
+            flb_plg_debug(ctx->ins, "[tail] closing inactive file %s",
                           file->name);
-            flb_tail_file_remove(file);
+            flb_tail_file_close_inactive(file);
         }
     }
 
@@ -246,39 +250,39 @@ static int tail_fs_event(struct flb_input_instance *ins,
                       file->inode, file->name);
 
         /* A rotated file must be re-registered */
-        flb_tail_file_rotated(file);
+        flb_tail_file_rotated(file, ev.name);
         flb_tail_fs_remove(file);
         flb_tail_fs_add_rotated(file);
     }
 
-    ret = fstat(file->fd, &st);
-    if (ret == -1) {
-        flb_plg_debug(ins, "inode=%"PRIu64" error stat(2) %s, removing",
+    if (file->closed) {
+        ret = stat(file->name, &st);
+    } else {
+        ret = fstat(file->fd, &st);
+    }
+
+    /* File was removed ? */
+    if (ret == -1 || st.st_nlink == 0) {
+        flb_plg_debug(ins, "inode=%"PRIu64" file has been deleted: %s",
                       file->inode, file->name);
+
+#ifdef FLB_HAVE_SQLDB
+        if (ctx->db) {
+            /* Remove file entry from the database */
+            flb_tail_db_file_delete(file, ctx);
+        }
+#endif
+        /* Remove file from the monitored list */
         flb_tail_file_remove(file);
         return 0;
     }
+
+    if (file->closed) {
+        flb_tail_file_reopen_inactive(file, &st, FLB_TAIL_STATIC);
+    }
+
     file->size = st.st_size;
     file->pending_bytes = (file->size - file->offset);
-
-    /* File was removed ? */
-    if (ev.mask & IN_ATTRIB) {
-        /* Check if the file have been deleted */
-        if (st.st_nlink == 0) {
-            flb_plg_debug(ins, "inode=%"PRIu64" file has been deleted: %s",
-                          file->inode, file->name);
-
-#ifdef FLB_HAVE_SQLDB
-            if (ctx->db) {
-                /* Remove file entry from the database */
-                flb_tail_db_file_delete(file, ctx);
-            }
-#endif
-            /* Remove file from the monitored list */
-            flb_tail_file_remove(file);
-            return 0;
-        }
-    }
 
     if (ev.mask & IN_MODIFY) {
         /*
@@ -334,9 +338,6 @@ static int tail_fs_event(struct flb_input_instance *ins,
     return 0;
 }
 
-
-
-
 /* File System events based on Inotify(2). Linux >= 2.6.32 is suggested */
 int flb_tail_fs_init(struct flb_input_instance *in,
                      struct flb_tail_config *ctx, struct flb_config *config)
@@ -363,10 +364,9 @@ int flb_tail_fs_init(struct flb_input_instance *in,
     ctx->coll_fd_fs1 = ret;
 
     /* Set a manual timer to check for inactive files */
-    if (ctx->mtime_filter < 0) {
-        ret = flb_input_set_collector_time(in, tail_fs_remove_inactive_files,
-                                           ctx->refresh_interval_sec,
-                                           ctx->refresh_interval_nsec, config);
+    if (ctx->inactivity_limit > 0) {
+        ret = flb_input_set_collector_time(in, tail_fs_scan_for_inactive_files,
+                                           2, 500000000, config);
         if (ret < 0) {
             return -1;
         }

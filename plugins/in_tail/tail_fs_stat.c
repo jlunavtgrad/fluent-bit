@@ -63,7 +63,12 @@ static int tail_fs_event(struct flb_input_instance *ins,
         fst = file->fs_backend;
 
         /* Check current status of the file */
-        ret = fstat(file->fd, &st);
+        if (file->closed == FLB_TRUE) {
+            ret = stat(file->name, &st);
+        } else {
+            ret = fstat(file->fd, &st);
+        }
+
         if (ret == -1) {
             flb_errno();
             continue;
@@ -72,6 +77,21 @@ static int tail_fs_event(struct flb_input_instance *ins,
         /* Check if the file was modified */
         if ((fst->st.st_mtime != st.st_mtime) ||
             (fst->st.st_size != st.st_size)) {
+
+            flb_plg_debug(file->config->ins, "inode=%"PRIu64" modified", file->inode);
+
+            /* reopen the file is it was previously inactive */
+            if (file->closed == FLB_TRUE) {
+                ret = flb_tail_file_reopen_inactive(file, &st, FLB_TAIL_STATIC);
+                if (ret == -1) {
+                    flb_errno();
+                    continue;
+                }
+            }
+
+            flb_plg_debug(file->config->ins, "inode=%"PRIu64" collecting events", file->inode);
+
+
             /* Update stat info and trigger the notification */
             memcpy(&fst->st, &st, sizeof(struct stat));
             fst->checked = t;
@@ -102,15 +122,14 @@ static int tail_fs_check(struct flb_input_instance *ins,
         file = mk_list_entry(head, struct flb_tail_file, _head);
         fst = file->fs_backend;
 
-        ret = fstat(file->fd, &st);
-        if (ret == -1) {
-            flb_plg_debug(ctx->ins, "error stat(2) %s, removing", file->name);
-            flb_tail_file_remove(file);
-            continue;
+        if (file->closed == FLB_TRUE) {
+            ret = stat(file->name, &st);
+        } else {
+            ret = fstat(file->fd, &st);
         }
 
-        /* Check if the file have been deleted */
-        if (st.st_nlink == 0) {
+        /* Check if the file was deleted */
+        if (ret == -1 || st.st_nlink == 0) {
             flb_plg_debug(ctx->ins, "file has been deleted: %s", file->name);
 #ifdef FLB_HAVE_SQLDB
             if (ctx->db) {
@@ -120,6 +139,10 @@ static int tail_fs_check(struct flb_input_instance *ins,
 #endif
             flb_tail_file_remove(file);
             continue;
+        }
+
+        if (file->closed && file->offset != st.st_size) {
+            flb_tail_file_reopen_inactive(file, &st, FLB_TAIL_STATIC);
         }
 
         /* Check if the file was truncated */
@@ -151,42 +174,40 @@ static int tail_fs_check(struct flb_input_instance *ins,
             file->pending_bytes = 0;
         }
 
-
-        /* Discover the current file name for the open file descriptor */
-        name = flb_tail_file_name(file);
-        if (!name) {
-            flb_plg_debug(ctx->ins, "could not resolve %s, removing", file->name);
-            flb_tail_file_remove(file);
-            continue;
-        }
-
-        /*
-         * Check if file still exists. This method requires explicity that the
-         * user is using an absolute path, otherwise we will be rotating the
-         * wrong file.
-         *
-         * flb_tail_target_file_name_cmp is a deeper compare than
-         * flb_tail_file_name_cmp. If applicable, it compares to the underlying
-         * real_name of the file.
-         */
-        if (flb_tail_file_is_rotated(ctx, file) == FLB_TRUE) {
-            flb_tail_file_rotated(file);
-        }
-
-        /* Check if the file is idle for too long */
-        if (ctx->mtime_filter < 0) {
-            gettimeofday(&time_now, NULL);
-            elapsed_seconds = time_now.tv_sec - st.st_mtime;
-
-            if (elapsed_seconds > (-ctx->mtime_filter)) {
+        if (!file->closed) {
+            /* Discover the current file name for the open file descriptor */
+            name = flb_tail_file_name(file);
+            if (!name) {
+                flb_plg_debug(ctx->ins, "could not resolve %s, removing", file->name);
                 flb_tail_file_remove(file);
                 continue;
             }
+
+            /*
+             * Check if file still exists. This method requires explicity that the
+             * user is using an absolute path, otherwise we will be rotating the
+             * wrong file.
+             *
+             * flb_tail_target_file_name_cmp is a deeper compare than
+             * flb_tail_file_name_cmp. If applicable, it compares to the underlying
+             * real_name of the file.
+             */
+            if (flb_tail_file_is_rotated(ctx, file) == FLB_TRUE) {
+                flb_tail_file_rotated(file, name);
+            }
+            flb_free(name);
+
+            /* Check if the file is inactive for too long */
+            if (ctx->inactivity_limit > 0) {
+                gettimeofday(&time_now, NULL);
+                elapsed_seconds = time_now.tv_sec - st.st_mtime;
+
+                if (elapsed_seconds > ctx->inactivity_limit) {
+                    flb_tail_file_close_inactive(file);
+                    continue;
+                }
+            }
         }
-
-
-        flb_free(name);
-
     }
 
     return 0;

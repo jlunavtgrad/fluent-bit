@@ -681,6 +681,7 @@ int flb_tail_file_append(char *path, struct stat *st, int mode,
 #endif
     file->skip_next = FLB_FALSE;
     file->skip_warn = FLB_FALSE;
+    file->closed    = FLB_FALSE;
 
     /* Local buffer */
     file->buf_size = ctx->buf_chunk_size;
@@ -773,6 +774,176 @@ error:
     return -1;
 }
 
+/*
+ * Inactive files are closed and some of the resources freed
+ * but they remain in the database and are still monitored for
+ * changes
+ */
+void flb_tail_file_close_inactive(struct flb_tail_file *file)
+{
+    if (file->pending_bytes > 0) {
+        return;
+    }
+
+    if (file->rotated > 0) {
+        /* don't close rotated files */
+        return;
+    }
+
+    file->closed = FLB_TRUE;
+
+    flb_sds_destroy(file->dmode_buf);
+    file->dmode_buf = NULL;
+    flb_sds_destroy(file->dmode_lastline);
+    file->dmode_lastline = NULL;
+
+    /* avoid deleting file with -1 fd */
+    if (file->fd != -1) {
+        close(file->fd);
+        file->fd = -1;
+    }
+
+    if (file->tag_buf) {
+        flb_free(file->tag_buf);
+        file->tag_buf = NULL;
+    }
+
+    if (file->buf_data) {
+        flb_free(file->buf_data);
+        file->buf_data = NULL;
+    }
+
+    flb_plg_debug(file->config->ins, "inode=%"PRIu64" inactive file closed", file->inode);
+}
+
+/* Reopen a file when modifications have been detected */
+int flb_tail_file_reopen_inactive(struct flb_tail_file *file,
+                                  struct stat *st, int mode)
+{
+    int fd;
+    int ret;
+    size_t len;
+    char *tag;
+    size_t tag_len;
+    struct flb_tail_config *ctx;
+
+    flb_plg_debug(file->config->ins, "inode=%"PRIu64" reopening", file->inode);
+
+    ctx = file->config;
+
+    if (!S_ISREG(st->st_mode)) {
+        return -1;
+    }
+
+    fd = open(file->name, O_RDONLY);
+    if (fd == -1) {
+        flb_errno();
+        flb_plg_error(ctx->ins, "cannot open %s", file->name);
+        return -1;
+    }
+
+    ret = lseek(fd, file->offset, SEEK_SET);
+    if (ret == -1) {
+        flb_errno();
+        goto error;
+    }
+
+    file->fd        = fd;
+    file->inode     = st->st_ino;
+    file->size      = st->st_size;
+    file->buf_len   = 0;
+    file->parsed    = 0;
+    file->tail_mode = mode;
+    file->tag_len   = 0;
+    file->tag_buf   = NULL;
+    file->pending_bytes = 0;
+    file->mult_firstline = FLB_FALSE;
+    file->mult_keys = 0;
+    file->mult_flush_timeout = 0;
+    file->mult_skipping = FLB_FALSE;
+    msgpack_sbuffer_init(&file->mult_sbuf);
+    file->dmode_flush_timeout = 0;
+    file->dmode_complete = true;
+    file->dmode_buf = flb_sds_create_size(ctx->docker_mode == FLB_TRUE ? 65536 : 0);
+    file->dmode_lastline = flb_sds_create_size(ctx->docker_mode == FLB_TRUE ? 20000 : 0);
+    file->dmode_firstline = false;
+    file->skip_next = FLB_FALSE;
+    file->skip_warn = FLB_FALSE;
+    file->closed    = FLB_FALSE;
+
+    /* Local buffer */
+    file->buf_size = ctx->buf_chunk_size;
+    file->buf_data = flb_malloc(file->buf_size);
+    if (!file->buf_data) {
+        flb_errno();
+        goto error;
+    }
+
+    /* Initialize (optional) dynamic tag */
+    if (ctx->dynamic_tag == FLB_TRUE) {
+        len = ctx->ins->tag_len + strlen(file->name) + 1;
+        tag = flb_malloc(len);
+        if (!tag) {
+            flb_errno();
+            flb_plg_error(ctx->ins, "failed to allocate tag buffer");
+            goto error;
+        }
+#ifdef FLB_HAVE_REGEX
+        ret = tag_compose(ctx->ins->tag, ctx->tag_regex, file->name, tag, &tag_len, ctx);
+#else
+        ret = tag_compose(ctx->ins->tag, file->name, tag, &tag_len, ctx);
+#endif
+        if (ret == 0) {
+            file->tag_len = tag_len;
+            file->tag_buf = flb_strdup(tag);
+        }
+        flb_free(tag);
+        if (ret != 0) {
+            flb_plg_error(ctx->ins, "failed to compose tag for file: %s", file->name);
+            goto error;
+        }
+    }
+    else {
+        file->tag_len = strlen(ctx->ins->tag);
+        file->tag_buf = flb_strdup(ctx->ins->tag);
+    }
+    if (!file->tag_buf) {
+        flb_plg_error(ctx->ins, "failed to set tag for file: %s", file->name);
+        flb_errno();
+        goto error;
+    }
+
+    if (mode == FLB_TAIL_STATIC) {
+        tail_signal_manager(file->config);
+    }
+
+    /* Remaining bytes to read */
+    file->pending_bytes = file->size - file->offset;
+
+#ifdef FLB_HAVE_METRICS
+    flb_metrics_sum(FLB_TAIL_METRIC_F_OPENED, 1, ctx->ins->metrics);
+#endif
+
+    flb_plg_debug(ctx->ins,
+                  "inode=%"PRIu64" with offset=%"PRId64" re-opened as %s",
+                  file->inode, file->offset, file->name);
+    return 0;
+
+error:
+    if (file) {
+        if (file->buf_data) {
+            flb_free(file->buf_data);
+        }
+        if (file->name) {
+            flb_free(file->name);
+        }
+        flb_free(file);
+    }
+    close(fd);
+
+    return -1;
+}
+
 void flb_tail_file_remove(struct flb_tail_file *file)
 {
     struct flb_tail_config *ctx;
@@ -807,7 +978,9 @@ void flb_tail_file_remove(struct flb_tail_file *file)
         flb_free(file->tag_buf);
     }
 
-    flb_free(file->buf_data);
+    if (file->tag_buf) {
+        flb_free(file->buf_data);
+    }
     flb_free(file->name);
     flb_free(file->real_name);
 
@@ -1110,7 +1283,7 @@ int flb_tail_file_to_event(struct flb_tail_file *file)
     /* Check if the file has been rotated */
     ret = flb_tail_file_is_rotated(ctx, file);
     if (ret == FLB_TRUE) {
-        flb_tail_file_rotated(file);
+        flb_tail_file_rotated(file, NULL);
     }
 
     /* Notify the fs-event handler that we will start monitoring this 'file' */
@@ -1230,18 +1403,21 @@ int flb_tail_file_name_dup(char *path, struct flb_tail_file *file)
 }
 
 /* Invoked every time a file was rotated */
-int flb_tail_file_rotated(struct flb_tail_file *file)
+int flb_tail_file_rotated(struct flb_tail_file *file, char *name)
 {
     int ret;
-    char *name;
     char *tmp;
+    char *name_alloc = NULL;
     struct stat st;
     struct flb_tail_config *ctx = file->config;
 
-    /* Get the new file name */
-    name = flb_tail_file_name(file);
     if (!name) {
-        return -1;
+        /* Get the new file name */
+        name_alloc = flb_tail_file_name(file);
+        if (!name) {
+            return -1;
+        }
+        name = name_alloc;
     }
 
     flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated %s -> %s",
@@ -1287,7 +1463,7 @@ int flb_tail_file_rotated(struct flb_tail_file *file)
         }
     }
     flb_free(tmp);
-    flb_free(name);
+    flb_free(name_alloc);
 
     return 0;
 }
@@ -1298,14 +1474,13 @@ static int check_purge_deleted_file(struct flb_tail_config *ctx,
     int ret;
     struct stat st;
 
-    ret = fstat(file->fd, &st);
-    if (ret == -1) {
-        flb_plg_debug(ctx->ins, "error stat(2) %s, removing", file->name);
-        flb_tail_file_remove(file);
-        return FLB_TRUE;
+    if (file->closed) {
+        ret = stat(file->name, &st);
+    } else {
+        ret = fstat(file->fd, &st);
     }
 
-    if (st.st_nlink == 0) {
+    if (ret == -1 || st.st_nlink == 0) {
         flb_plg_debug(ctx->ins, "purge: monitored file has been deleted: %s",
                       file->name);
 #ifdef FLB_HAVE_SQLDB

@@ -264,7 +264,7 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
             }
 
             if (tail_is_mtime_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
-                flb_plg_debug(ctx->ins, "mtime_excluded=%s", globbuf.gl_pathv[i]);
+                //flb_plg_debug(ctx->ins, "mtime_excluded=%s", globbuf.gl_pathv[i]);
                 continue;
             }
 

@@ -75,7 +75,11 @@ static int in_tail_collect_pending(struct flb_input_instance *ins,
         file = mk_list_entry(head, struct flb_tail_file, _head);
 
         /* Gather current file size */
-        ret = fstat(file->fd, &st);
+        if (file->closed) {
+            ret = stat(file->name, &st);
+        } else {
+            ret = fstat(file->fd, &st);
+        }
         if (ret == -1) {
             flb_errno();
             flb_tail_file_remove(file);
@@ -86,6 +90,10 @@ static int in_tail_collect_pending(struct flb_input_instance *ins,
 
         if (file->pending_bytes <= 0) {
             continue;
+        }
+
+        if (file->closed) {
+            flb_tail_file_reopen_inactive(file, &st, FLB_TAIL_STATIC);
         }
 
         ret = flb_tail_file_chunk(file);
@@ -240,7 +248,7 @@ static int in_tail_watcher_callback(struct flb_input_instance *ins,
             }
 
             /* The symbolic link name has been rotated */
-            flb_tail_file_rotated(file);
+            flb_tail_file_rotated(file, NULL);
         }
     }
     return ret;
@@ -488,6 +496,15 @@ static struct flb_config_map config_map[] = {
      "with recent modifications, while negative values exclude files "
      "without recent modifications. Supports m,h,d (minutes, hours, days) "
      "syntax."
+    },
+    {
+     FLB_CONFIG_MAP_TIME, "close_inactive", "0",
+     0, FLB_TRUE, offsetof(struct flb_tail_config, inactivity_limit),
+     "Save memory by closing inactive log files. The default "
+     "value is 0 which disables this feature. Inactive files are still "
+     "monitored for changes, and will be reopened as needed. File rotations "
+     "can be missed in some situations when using this feature. Supports "
+     "m,h,d  (minutes, hours, days) syntax."
     },
     {
      FLB_CONFIG_MAP_STR, "key", "log",

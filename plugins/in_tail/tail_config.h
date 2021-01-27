@@ -78,8 +78,8 @@ struct flb_tail_config {
     flb_sds_t key;             /* key for unstructured record  */
     int   skip_long_lines;     /* skip long lines              */
     int   exit_on_eof;         /* exit fluent-bit on EOF, test */
-    int mtime_filter;          /* filter files by modified times */
-
+    int mtime_filter;          /* filter files by mtime        */
+    int inactivity_limit;      /* sec to wait b4 closing files */
 
     /* Database */
 #ifdef FLB_HAVE_SQLDB
@@ -116,9 +116,6 @@ struct flb_tail_config {
 
     /* List of shell patterns used to exclude certain file names */
     struct mk_list *exclude_list;
-
-    /* timestamp of the most recent scan for inactive files */
-    struct timeval last_mtime_scan;
 
     /* Plugin input instance */
     struct flb_input_instance *ins;

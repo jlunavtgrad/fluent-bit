@@ -85,6 +85,9 @@ struct flb_tail_file {
     /* Did the plugin already warn the user about long lines ? */
     int skip_warn;
 
+    /* Was the file closed due to inactivity */
+    bool closed;
+
     /* Opaque data type for specific fs-event backend data */
     void *fs_backend;
 
